@@ -1,0 +1,60 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>ESP32 Temperature</title>
+<body style="font:16px system-ui;max-width:600px;margin:2rem auto">
+  <h2>ESP32 Temperature</h2>
+  <div id="status">Loading page…</div>
+  <div style="font-size:48px" id="val">--.- °C</div>
+  <pre id="log" style="background:#f4f4f4;padding:8px;height:220px;overflow:auto"></pre>
+
+  <!-- Try CDN first -->
+  <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+  <script>
+  (function ensureMqtt(){
+    if (window.mqtt) return;
+    var s = document.createElement('script');
+    s.src = 'mqtt.min.js'; // local fallback (put mqtt.min.js next to this file)
+    s.onerror = function(){ document.getElementById('status').textContent = 'Failed to load mqtt.min.js (CDN and local).'; };
+    document.head.appendChild(s);
+  })();
+  </script>
+
+  <script>
+  (function start(){
+    function go(){
+      if (!window.mqtt){ return setTimeout(go, 200); }
+      //const host  = "ws://192.168.1.126:9001";
+      //const host  = "ws://192.168.1.126:9001";
+      //const topic = "loranet/up/#";
+      //const user  = "Mot", pass = "Buster02";
+      //const user  = "Mot";                                 // no auth on public broker
+      //const pass  = "Buster02";
+      const host  = "wss://broker.emqx.io:8084/mqtt";
+      const topic = "loranet/up/esp32-01-mot";
+      const user  = "";
+      const pass  = "";
+
+      const statusEl = document.getElementById("status");
+      const logEl = document.getElementById("log");
+      const valEl = document.getElementById("val");
+      const log = m => { logEl.textContent += m + "\n"; logEl.scrollTop = logEl.scrollHeight; };
+
+      statusEl.textContent = "Connecting to " + host + "...";
+      const client = mqtt.connect(host, {
+        username: user, password: pass,
+        keepalive: 30, reconnectPeriod: 2000,
+        protocolVersion: 4, clean: true,
+        clientId: "wsclient-" + Math.random().toString(16).slice(2,10)
+      });
+
+      client.on("connect", () => { statusEl.textContent = "Connected"; log("Connected → subscribing…"); client.subscribe(topic, e=>e&&log("Sub error: "+e.message)); });
+      client.on("message", (t, p) => { const s = p.toString(); log(t+"  "+s); const m = s.match(/c=([-+]?\d+(?:\.\d+)?)/); if(m) valEl.textContent = m[1] + " °C"; });
+      client.on("reconnect", () => { statusEl.textContent = "Reconnecting…"; log("Reconnecting…"); });
+      client.on("error", e => { statusEl.textContent = "Error: " + e.message; log("Error: " + e.message); });
+      client.on("close", () => log("Close"));
+      client.on("offline", () => log("Offline"));
+    }
+    go();
+  })();
+  </script>
+</body>

@@ -1,0 +1,107 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>ESP32 Temperature (Per-device via EMQX WSS)</title>
+<body style="font:16px system-ui;max-width:720px;margin:2rem auto;line-height:1.35">
+  <h2>ESP32 Temperature</h2>
+  <div id="status">Loading page…</div>
+
+  <div style="display:flex;gap:8px;flex-wrap:wrap;margin:12px 0">
+    <label>Device ID (MAC6): <input id="devid" placeholder="ABC123" style="padding:6px"></label>
+    <button id="apply" style="padding:6px 10px">Subscribe</button>
+    <span id="topic" style="margin-left:auto;font-family:monospace"></span>
+  </div>
+
+  <div style="font-size:56px" id="val">--.- °C</div>
+  <pre id="log" style="background:#f4f4f4;padding:10px;height:260px;overflow:auto;border:1px solid #ddd"></pre>
+
+  <!-- MQTT over WebSockets: try CDN, fallback to local mqtt.min.js if present -->
+  <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+  <script>
+  (function ensureMqtt(){
+    if (window.mqtt) return;
+    var s = document.createElement('script');
+    s.src = 'mqtt.min.js';
+    s.onerror = function(){ document.getElementById('status').textContent = 'Failed to load mqtt.min.js (CDN and local).'; };
+    document.head.appendChild(s);
+  })();
+  </script>
+
+  <script>
+  (function(){
+    const defaultHost = "wss://broker.emqx.io:8084/mqtt";   // EMQX public broker (TLS WebSockets)
+    const statusEl = document.getElementById("status");
+    const logEl = document.getElementById("log");
+    const valEl = document.getElementById("val");
+    const topicEl = document.getElementById("topic");
+    const idInput = document.getElementById("devid");
+    const applyBtn = document.getElementById("apply");
+
+    const log = m => { logEl.textContent += m + "\n"; logEl.scrollTop = logEl.scrollHeight; };
+
+    function normID(x){
+      return (x||"").toUpperCase().replace(/[^0-9A-F]/g,"").slice(-6);
+    }
+
+    // Resolve initial device ID from ?id=ABC123
+    const params = new URLSearchParams(location.search);
+    let deviceID = normID(params.get("id"));
+
+    function topicFor(id){
+      return id ? `loranet/up/esp32-${id}` : "loranet/up/#";
+    }
+
+    function setTopicLabel(id){
+      topicEl.textContent = "Topic: " + topicFor(id);
+    }
+
+    function setStatus(s){ statusEl.textContent = s; }
+
+    function connect(){
+      if (!window.mqtt) return setTimeout(connect, 150);
+      setStatus("Connecting to " + defaultHost + " …");
+      const client = mqtt.connect(defaultHost, {
+        // EMQX public broker uses anonymous access (no username/password)
+        keepalive: 30,
+        reconnectPeriod: 2000,
+        protocolVersion: 4,
+        clean: true,
+        clientId: "wsclient-" + Math.random().toString(16).slice(2,10)
+      });
+
+      let currentTopic = topicFor(deviceID);
+      setTopicLabel(deviceID);
+
+      client.on("connect", () => {
+        setStatus("Connected");
+        log("Connected → subscribing: " + currentTopic);
+        client.subscribe(currentTopic, err => { if (err) log("Subscribe error: " + err.message); });
+      });
+
+      client.on("message", (t, p) => {
+        const s = p.toString();
+        log(t + "  " + s);
+        const m = s.match(/c=([-+]?\d+(?:\.\d+)?)/);
+        if (m) valEl.textContent = m[1] + " °C";
+      });
+
+      client.on("reconnect", () => { setStatus("Reconnecting…"); log("Reconnecting…"); });
+      client.on("error", e => { setStatus("Error: " + e.message); log("Error: " + e.message); });
+      client.on("close", () => log("Close"));
+      client.on("offline", () => log("Offline"));
+    }
+
+    applyBtn.addEventListener("click", () => {
+      deviceID = normID(idInput.value);
+      // reload with ?id= so you can bookmark the device
+      const url = new URL(location.href);
+      if (deviceID) url.searchParams.set("id", deviceID);
+      else url.searchParams.delete("id");
+      location.href = url.toString();
+    });
+
+    // preload UI if id came from query string
+    if (deviceID) idInput.value = deviceID;
+    connect();
+  })();
+  </script>
+</body>

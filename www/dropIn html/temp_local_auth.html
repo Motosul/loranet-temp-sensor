@@ -1,0 +1,101 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>ESP32 Temperature (Local broker with auth)</title>
+<body style="font:16px system-ui;max-width:760px;margin:2rem auto;line-height:1.35">
+  <h2>ESP32 Temperature — Local Mosquitto (WebSockets + auth)</h2>
+  <div id="status">Loading…</div>
+
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:12px 0">
+    <label>Host (ws://IP:9001)<br><input id="host" style="padding:6px" value="ws://192.168.1.126:9001"></label>
+    <label>Device ID (MAC6, optional)<br><input id="devid" style="padding:6px" placeholder="ABC123"></label>
+    <label>Username<br><input id="user" style="padding:6px" value="Mot"></label>
+    <label>Password<br><input id="pass" style="padding:6px" value="Buster02" type="password"></label>
+    <button id="connect" style="grid-column:1/-1;padding:8px 10px">Connect / Subscribe</button>
+  </div>
+
+  <div style="margin:6px 0;font-family:monospace" id="topic">Topic: (not connected)</div>
+
+  <div style="font-size:56px" id="val">--.- °C</div>
+  <pre id="log" style="background:#f4f4f4;padding:10px;height:260px;overflow:auto;border:1px solid #ddd"></pre>
+
+  <!-- MQTT over WebSockets library: try CDN, fallback to local mqtt.min.js if present -->
+  <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+  <script>
+  (function ensureMqtt(){
+    if (window.mqtt) return;
+    var s = document.createElement('script');
+    s.src = 'mqtt.min.js';  // place mqtt.min.js next to this file if you want offline
+    s.onerror = function(){ document.getElementById('status').textContent = 'Failed to load mqtt.min.js (CDN and local).'; };
+    document.head.appendChild(s);
+  })();
+  </script>
+
+  <script>
+  (function(){
+    const statusEl = document.getElementById("status");
+    const logEl = document.getElementById("log");
+    const valEl = document.getElementById("val");
+    const topicEl = document.getElementById("topic");
+
+    const hostIn = document.getElementById("host");
+    const idIn   = document.getElementById("devid");
+    const userIn = document.getElementById("user");
+    const passIn = document.getElementById("pass");
+    const btn    = document.getElementById("connect");
+
+    const log = m => { logEl.textContent += m + "\n"; logEl.scrollTop = logEl.scrollHeight; };
+    const normID = x => (x||"").toUpperCase().replace(/[^0-9A-F]/g,"").slice(-6);
+    const topicFor = id => id ? `loranet/up/esp32-${id}` : "loranet/up/#";
+
+    // Allow query string overrides: ?host=ws://IP:9001&user=Mot&pass=Buster02&id=ABC123
+    const qs = new URLSearchParams(location.search);
+    if (qs.get("host")) hostIn.value = qs.get("host");
+    if (qs.get("user")) userIn.value = qs.get("user");
+    if (qs.get("pass")) passIn.value = qs.get("pass");
+    if (qs.get("id"))   idIn.value   = normID(qs.get("id"));
+
+    function connect(){
+      if (!window.mqtt) return setTimeout(connect, 150);
+
+      const host  = hostIn.value.trim();
+      const user  = userIn.value;
+      const pass  = passIn.value;
+      const id6   = normID(idIn.value);
+      let   topic = topicFor(id6);
+
+      statusEl.textContent = "Connecting to " + host + " …";
+      topicEl.textContent  = "Topic: " + topic;
+
+      const client = mqtt.connect(host, {
+        username: user,
+        password: pass,
+        keepalive: 30,
+        reconnectPeriod: 2000,
+        protocolVersion: 4,
+        clean: true,
+        clientId: "wsclient-" + Math.random().toString(16).slice(2,10)
+      });
+
+      client.on("connect", () => {
+        statusEl.textContent = "Connected";
+        log("Connected → subscribing: " + topic);
+        client.subscribe(topic, err => { if (err) log("Subscribe error: " + err.message); });
+      });
+
+      client.on("message", (t, p) => {
+        const s = p.toString();
+        log(t + "  " + s);
+        const m = s.match(/c=([-+]?\d+(?:\.\d+)?)/);
+        if (m) valEl.textContent = m[1] + " °C";
+      });
+
+      client.on("reconnect", () => { statusEl.textContent = "Reconnecting…"; log("Reconnecting…"); });
+      client.on("error", e => { statusEl.textContent = "Error: " + e.message; log("Error: " + e.message); });
+      client.on("close", () => log("Close"));
+      client.on("offline", () => log("Offline"));
+    }
+
+    btn.addEventListener("click", connect);
+  })();
+  </script>
+</body>

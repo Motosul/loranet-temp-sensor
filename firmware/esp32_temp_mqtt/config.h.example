@@ -1,0 +1,12 @@
+// config.h.example -- copy to config.h and edit values
+#pragma once
+#define WIFI_SSID      "YOUR_WIFI_SSID"
+#define WIFI_PASSWORD  "YOUR_WIFI_PASSWORD"
+#define MQTT_HOST      "192.168.1.100"
+#define MQTT_PORT      1883
+#define MQTT_USER      "youruser"
+#define MQTT_PASS      "yourpass"
+#define MQTT_CLIENT_ID "esp32-01"
+#define MQTT_TOPIC     "loranet/up/esp32-01"
+#define ONE_WIRE_PIN   4
+#define PUB_MS         10000

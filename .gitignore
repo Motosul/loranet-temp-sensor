@@ -1,0 +1,9 @@
+# secrets
+firmware/esp32_temp_mqtt/config.h
+
+# broker auth files
+broker/passwd
+broker/acl
+
+# Python server cache
+__pycache__/
