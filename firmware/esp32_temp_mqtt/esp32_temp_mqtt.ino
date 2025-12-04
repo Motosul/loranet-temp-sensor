@@ -9,10 +9,11 @@
 #include <OneWire.h>
 #include <DallasTemperature.h>
 #include <math.h>
+#include <time.h>   // NTP time for ISO timestamps
 
 // ---------- Wi-Fi ----------
-#define WIFI_SSID     "Smart Modem-DT9L3S"
-#define WIFI_PASSWORD "FunkyWallabyK62#"
+#define WIFI_SSID     "Smart Modem-2745EJ"
+#define WIFI_PASSWORD "GentleBadgerV26!"
 
 // ---------- MQTT (pick ONE broker) ----------
 // A) Online public EMQX (no auth)
@@ -22,10 +23,10 @@
 #define MQTT_PASS     ""
 
 // // B) Your local Mosquitto (uncomment & edit; then comment EMQX block above)
-// #define MQTT_HOST     "192.168.1.126"
-// #define MQTT_PORT     1883
-// #define MQTT_USER     "Mot"
-// #define MQTT_PASS     "Buster02"
+ //#define MQTT_HOST     "192.168.1.72"
+ //#define MQTT_PORT     1883
+ //#define MQTT_USER     "Mot"
+ //#define MQTT_PASS     "Buster02"
 
 // ---------- DS18B20 ----------
 #define ONE_WIRE_PIN  4         // ESP32 GPIO for DS18B20 data
@@ -54,6 +55,37 @@ String mac6()
   char buf[7];
   snprintf(buf, sizeof(buf), "%06X", last3);
   return String(buf);
+}
+
+// --- Time sync + ISO8601 UTC timestamp ---
+void initTime() {
+  // Use UTC (0,0). Add your local offset if you want local time.
+  configTime(0, 0, "pool.ntp.org", "time.nist.gov", "time.google.com");
+  // wait up to ~15s for time to sync
+  for (int i = 0; i < 30 && time(nullptr) < 1700000000; i++) {  // ~2023-11-14
+    delay(500);
+  }
+}
+
+const char* iso8601_utc(char* out, size_t len) {
+  time_t now = time(nullptr);
+  if (now < 1700000000) {                      // not synced yet
+    snprintf(out, len, "1970-01-01T00:00:00Z");
+    return out;
+  }
+  struct tm tmUTC;
+  gmtime_r(&now, &tmUTC);
+  strftime(out, len, "%Y-%m-%dT%H:%M:%SZ", &tmUTC);
+  return out;
+}
+
+// --- Retained message cleanup (publish empty retained) ---
+void clearRetainedOnce() {
+  static bool cleared = false;
+  if (cleared) return;
+  // publish empty retained to delete any previous retained value
+  mqtt.publish(topicTemp.c_str(), "", true);
+  cleared = true;
 }
 
 void wifiConnect()
@@ -111,10 +143,17 @@ void publishTemp()
 {
   float c = readC();
   if (!isnan(c)) {
-    char payload[24];
-    snprintf(payload, sizeof(payload), "c=%.2f", c);
+    char ts[25];  // "YYYY-MM-DDThh:mm:ssZ"
+    iso8601_utc(ts, sizeof(ts));
+
+    char payload[96];
+    // JSON: temperature in C and ISO8601 timestamp
+    snprintf(payload, sizeof(payload), "{\"c\":%.2f,\"ts\":\"%s\"}", c, ts);
+
     Serial.printf("Publish %s → %s\n", payload, topicTemp.c_str());
-    if (!mqtt.publish(topicTemp.c_str(), payload, false)) {
+
+    // retained = true so the last value is kept by the broker
+    if (!mqtt.publish(topicTemp.c_str(), payload, true)) {
       Serial.println("Publish failed, forcing reconnect");
       mqtt.disconnect();
     }
@@ -131,10 +170,16 @@ void setup()
   Serial.println("\nESP32 + DS18B20 → MQTT");
 
   // Build IDs/topics from MAC
-  deviceId     = mac6();                 // e.g. "A1B2C3"
-  mqttClientId = "esp32-01-mot" + deviceId;
-  topicTemp    = "loranet/up/esp32-01-mot" + deviceId;
-  topicStatus  = "loranet/status/esp32-01-mot" + deviceId;
+  //deviceId     = mac6();                 // e.g. "A1B2C3"
+  //mqttClientId = "esp32-01-mot" + deviceId;
+  //topicTemp    = "loranet/up/esp32-01-mot" + deviceId;
+  //topicStatus  = "loranet/status/esp32-01-mot" + deviceId;
+
+  deviceId     = mac6();                 // still fine if you want it
+  mqttClientId = "esp32-01-mot";         // simple client id
+  topicTemp    = "loranet/up/esp32-01-mot";
+  topicStatus  = "loranet/status/esp32-01-mot";
+
 
   // DS18B20
   pinMode(ONE_WIRE_PIN, INPUT_PULLUP);
@@ -156,6 +201,8 @@ void setup()
   // Connect
   wifiConnect();
   mqttConnect();
+  initTime();           // sync NTP (needs Wi-Fi)
+  clearRetainedOnce();  // one-time: clear stale retained, then normal operation
 }
 
 void loop()

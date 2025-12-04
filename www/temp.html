@@ -20,41 +20,57 @@
   </script>
 
   <script>
-  (function start(){
-    function go(){
-      if (!window.mqtt){ return setTimeout(go, 200); }
-      //const host  = "ws://192.168.1.126:9001";
-      //const host  = "ws://192.168.1.126:9001";
-      //const topic = "loranet/up/#";
-      //const user  = "Mot", pass = "Buster02";
-      //const user  = "Mot";                                 // no auth on public broker
-      //const pass  = "Buster02";
-      const host  = "wss://broker.emqx.io:8084/mqtt";
-      const topic = "loranet/up/esp32-01-mot";
-      const user  = "";
-      const pass  = "";
+ (function start(){
+  function go(){
+    if (!window.mqtt){ return setTimeout(go, 200); }
 
-      const statusEl = document.getElementById("status");
-      const logEl = document.getElementById("log");
-      const valEl = document.getElementById("val");
-      const log = m => { logEl.textContent += m + "\n"; logEl.scrollTop = logEl.scrollHeight; };
+    const host  = "wss://broker.emqx.io:8084/mqtt";
+    const topic = "loranet/up/#";
+    const user  = "";
+    const pass  = "";
 
-      statusEl.textContent = "Connecting to " + host + "...";
-      const client = mqtt.connect(host, {
-        username: user, password: pass,
-        keepalive: 30, reconnectPeriod: 2000,
-        protocolVersion: 4, clean: true,
-        clientId: "wsclient-" + Math.random().toString(16).slice(2,10)
-      });
+    const statusEl = document.getElementById("status");
+    const logEl = document.getElementById("log");
+    const valEl = document.getElementById("val");
+    const log = m => { logEl.textContent += m + "\n"; logEl.scrollTop = logEl.scrollHeight; };
 
-      client.on("connect", () => { statusEl.textContent = "Connected"; log("Connected → subscribing…"); client.subscribe(topic, e=>e&&log("Sub error: "+e.message)); });
-      client.on("message", (t, p) => { const s = p.toString(); log(t+"  "+s); const m = s.match(/c=([-+]?\d+(?:\.\d+)?)/); if(m) valEl.textContent = m[1] + " °C"; });
-      client.on("reconnect", () => { statusEl.textContent = "Reconnecting…"; log("Reconnecting…"); });
-      client.on("error", e => { statusEl.textContent = "Error: " + e.message; log("Error: " + e.message); });
-      client.on("close", () => log("Close"));
-      client.on("offline", () => log("Offline"));
-    }
-    go();
-  })();
+    statusEl.textContent = "Connecting to " + host + "...";
+    const client = mqtt.connect(host, {
+      username: user, password: pass,
+      keepalive: 30, reconnectPeriod: 2000,
+      protocolVersion: 4, clean: true,
+      clientId: "wsclient-" + Math.random().toString(16).slice(2,10)
+    });
+
+    client.on("connect", () => {
+      statusEl.textContent = "Connected";
+      log("Connected → subscribing…");
+      client.subscribe(topic, e => e && log("Sub error: " + e.message));
+    });
+
+    client.on("message", (t, p) => {
+      const s = p.toString();
+      log(t + "  " + s);
+
+      try {
+        const data = JSON.parse(s);
+        if (typeof data.c === "number") {
+          valEl.textContent = data.c.toFixed(2) + " °C";
+          return;
+        }
+      } catch (e) {}
+
+      const m = s.match(/c=([-+]?\d+(?:\.\d+)?)/);
+      if (m) valEl.textContent = m[1] + " °C";
+    });
+
+    client.on("reconnect", () => { statusEl.textContent = "Reconnecting…"; log("Reconnecting…"); });
+    client.on("error", e => { statusEl.textContent = "Error: " + e.message; log("Error: " + e.message); });
+    client.on("close", () => log("Close"));
+    client.on("offline", () => log("Offline"));
+  }
+  go();
+})();
+
   </script>
 </body>
