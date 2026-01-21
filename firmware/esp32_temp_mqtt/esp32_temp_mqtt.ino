@@ -4,12 +4,29 @@
   - Publishes: c=<tempC>  to topic: loranet/up/esp32-<MAC6>
 */
 
+/*
+  ESP32 + DS18B20 → MQTT (LOW POWER, Deep Sleep)
+
+  Wiring:
+  - DS18B20 DQ -> GPIO 4
+  - DS18B20 VCC -> 3V3
+  - DS18B20 GND -> GND
+  - 4.7k pull-up from DQ to 3V3
+
+  Publishes retained JSON:
+    {"c":22.34,"ts":"2026-01-21T01:23:45Z"}
+
+  Topic (stable):
+    loranet/up/esp32-01-mot
+*/
+
 #include <WiFi.h>
 #include <PubSubClient.h>
 #include <OneWire.h>
 #include <DallasTemperature.h>
 #include <math.h>
 #include <time.h>   // NTP time for ISO timestamps
+#include "esp_sleep.h"
 
 // ---------- Wi-Fi ----------
 #define WIFI_SSID     "Smart Modem-2745EJ"
@@ -31,6 +48,8 @@
 // ---------- DS18B20 ----------
 #define ONE_WIRE_PIN  4         // ESP32 GPIO for DS18B20 data
 #define PUB_MS        10000UL   // publish interval (ms)
+#define SLEEP_MINUTES 5
+#define WIFI_TIMEOUTS_MS 20000
 
 WiFiClient net;
 PubSubClient mqtt(net);
@@ -46,6 +65,9 @@ String topicStatus;     // "loranet/status/esp32-ABC123"
 String mqttClientId;    // "esp32-ABC123"
 
 unsigned long lastPub = 0;
+
+RTC_DATA_ATTR uint32_t wakeCount = 0;
+#define NTP_SYNC_EVERY_N_WAKES 12 //sync time every N wakes (saves power)
 
 // --------- helpers ---------
 String mac6()
@@ -91,6 +113,7 @@ void clearRetainedOnce() {
 void wifiConnect()
 {
   WiFi.mode(WIFI_STA);
+  WiFi.setSleep(false);
   WiFi.setHostname(mqttClientId.c_str());
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
 
@@ -161,6 +184,59 @@ void publishTemp()
     Serial.println("Temp read invalid (disconnected/85C/pending).");
   }
 }
+bool wifiConnectWithTimeout()
+{
+  WiFi.mode(WIFI_STA);
+  WiFi.setHostname(mqttClientId.c_str());
+
+  // More reliable on battery during connect
+  WiFi.setSleep(false);
+
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+
+  Serial.printf("WiFi: connecting to %s", WIFI_SSID);
+  unsigned long start = millis();
+  while (WiFi.status() != WL_CONNECTED && (millis() - start) < WIFI_TIMEOUTS_MS) {
+    delay(250);
+    Serial.print('.');
+  }
+
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.printf("\nWiFi: connected, IP=%s\n", WiFi.localIP().toString().c_str());
+    return true;
+  }
+
+  Serial.println("\nWiFi: timeout (sleeping)");
+  return false;
+}
+
+void initTimeSometimes()
+{
+  // Only do NTP occasionally to reduce wake time/power
+  if ((wakeCount % NTP_SYNC_EVERY_N_WAKES) != 0) return;
+
+  configTime(0, 0, "pool.ntp.org", "time.nist.gov", "time.google.com");
+
+  // wait up to ~10s
+  for (int i = 0; i < 40 && time(nullptr) < 1700000000; i++) {
+    delay(250);
+  }
+}
+
+void powerDownAndSleep()
+{
+  mqtt.disconnect();
+  delay(50);
+
+  WiFi.disconnect(true);
+  WiFi.mode(WIFI_OFF);
+  btStop(); // ensure BT off too
+  delay(50);
+
+  Serial.printf("Sleeping for %d minutes...\n", SLEEP_MINUTES);
+  esp_sleep_enable_timer_wakeup((uint64_t)SLEEP_MINUTES * 60ULL * 1000000ULL);
+  esp_deep_sleep_start();
+}
 
 // --------- Arduino ---------
 void setup()
@@ -184,7 +260,7 @@ void setup()
   // DS18B20
   pinMode(ONE_WIRE_PIN, INPUT_PULLUP);
   sensors.begin();
-  sensors.setResolution(12);
+  sensors.setResolution(11);
   sensors.setWaitForConversion(true);    // block until finished
 
   int n = sensors.getDeviceCount();
@@ -198,22 +274,38 @@ void setup()
     Serial.println("No DS18B20 detected. Check wiring and 4.7k pull-up.");
   }
 
-  // Connect
-  wifiConnect();
-  mqttConnect();
-  initTime();           // sync NTP (needs Wi-Fi)
-  clearRetainedOnce();  // one-time: clear stale retained, then normal operation
+wakeCount++;
+
+// Connect (with timeout so we don't drain the battery)
+if (!wifiConnectWithTimeout()) {
+  powerDownAndSleep();
+}
+
+mqttConnect();
+
+// NTP only sometimes (saves time/power)
+initTimeSometimes();
+
+clearRetainedOnce();  // optional: keep if you still want to clear retained once
+
 }
 
 void loop()
 {
-  if (WiFi.status() != WL_CONNECTED) wifiConnect();
-  if (!mqtt.connected())             mqttConnect();
+  // Ensure connections (use your existing functions)
+  if (WiFi.status() != WL_CONNECTED) {
+    if (!wifiConnectWithTimeout()) powerDownAndSleep();
+  }
+  if (!mqtt.connected()) mqttConnect();
+
   mqtt.loop();
 
-  unsigned long now = millis();
-  if (now - lastPub >= PUB_MS) {
-    lastPub = now;
-    publishTemp();
-  }
+  // Publish once, then sleep
+  publishTemp();
+
+  // Give the publish a moment to flush
+  delay(200);
+
+  powerDownAndSleep();
 }
+
