@@ -22,7 +22,8 @@
 
 #include <WiFi.h>
 #include <PubSubClient.h>
-#include <DHT.h>
+#include <OneWire.h>
+#include <DallasTemperature.h>
 #include <math.h>
 #include <time.h>   // NTP time for ISO timestamps
 #include "esp_sleep.h"
@@ -45,16 +46,18 @@
  //#define MQTT_PASS     "Buster02"
 
 // ---------- DS18B20 ----------
-#define DHTPIN 4                // ESP32 GPIO for DS18B20 data
-#define DHTTYPE DHT22         
+#define ONE_WIRE_PIN  4         // ESP32 GPIO for DS18B20 data
 #define PUB_MS        10000UL   // publish interval (ms)
 #define SLEEP_MINUTES 5
 #define WIFI_TIMEOUTS_MS 20000
 
 WiFiClient net;
 PubSubClient mqtt(net);
+OneWire oneWire(ONE_WIRE_PIN);
+DallasTemperature sensors(&oneWire);
 
-DHT dht(DHTPIN, DHTTYPE);
+DeviceAddress sensorAddr;
+bool          haveSensor = false;
 
 String deviceId;        // "ABC123" (last 3 bytes of MAC)
 String topicTemp;       // "loranet/up/esp32-ABC123"
@@ -149,39 +152,38 @@ void mqttConnect()
   }
 }
 
-bool readDHT(float &tempC, float &humidity)
+float readC()
 {
-  tempC = dht.readTemperature();   // °C
-  humidity = dht.readHumidity();   // %
-
-  if (isnan(tempC) || isnan(humidity)) {
-    Serial.println("DHT read failed");
-    return false;
-  }
-  return true;
+  if (!haveSensor) return NAN;
+  sensors.requestTemperatures();                 // blocking (we set wait=true)
+  float c = sensors.getTempC(sensorAddr);        // by address (more robust)
+  if (c == DEVICE_DISCONNECTED_C) return NAN;
+  if (fabsf(c - 85.0f) < 0.01f) return NAN;      // not finished / default
+  return c;
 }
 
 void publishTemp()
 {
-  float c, h;
-  if (!readDHT(c, h)) return;
+  float c = readC();
+  if (!isnan(c)) {
+    char ts[25];  // "YYYY-MM-DDThh:mm:ssZ"
+    iso8601_utc(ts, sizeof(ts));
 
-  char ts[25];
-  iso8601_utc(ts, sizeof(ts));
+    char payload[96];
+    // JSON: temperature in C and ISO8601 timestamp
+    snprintf(payload, sizeof(payload), "{\"c\":%.2f,\"ts\":\"%s\"}", c, ts);
 
-  char payload[128];
-  snprintf(
-    payload,
-    sizeof(payload),
-    "{\"c\":%.2f,\"h\":%.1f,\"ts\":\"%s\"}",
-    c, h, ts
-  );
+    Serial.printf("Publish %s → %s\n", payload, topicTemp.c_str());
 
-  Serial.printf("Publish %s → %s\n", payload, topicTemp.c_str());
-
-  mqtt.publish(topicTemp.c_str(), payload, true);
+    // retained = true so the last value is kept by the broker
+    if (!mqtt.publish(topicTemp.c_str(), payload, true)) {
+      Serial.println("Publish failed, forcing reconnect");
+      mqtt.disconnect();
+    }
+  } else {
+    Serial.println("Temp read invalid (disconnected/85C/pending).");
+  }
 }
-
 bool wifiConnectWithTimeout()
 {
   WiFi.mode(WIFI_STA);
@@ -255,10 +257,22 @@ void setup()
   topicStatus  = "loranet/status/esp32-01-mot";
 
 
-  // DHT22
-  dht.begin();
-  delay(1500); // DHT needs a moment after power-up
+  // DS18B20
+  pinMode(ONE_WIRE_PIN, INPUT_PULLUP);
+  sensors.begin();
+  sensors.setResolution(11);
+  sensors.setWaitForConversion(true);    // block until finished
 
+  int n = sensors.getDeviceCount();
+  Serial.printf("DS18B20 devices found: %d\n", n);
+  if (n > 0 && sensors.getAddress(sensorAddr, 0)) {
+    char addrHex[17] = {0};
+    for (uint8_t i = 0; i < 8; i++) sprintf(addrHex + i*2, "%02X", sensorAddr[i]);
+    Serial.printf("First sensor addr: %s\n", addrHex);
+    haveSensor = true;
+  } else {
+    Serial.println("No DS18B20 detected. Check wiring and 4.7k pull-up.");
+  }
 
 wakeCount++;
 
